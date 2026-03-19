@@ -1,6 +1,6 @@
 # Hantek 365C/D/E/F — Linux Tools
 
-Open-source Linux tools for the **Hantek 365C**, **Hantek 365D**, **Hantek 365E** and **365F** true-RMS multimeters.
+Open-source Linux tools for the **Hantek 365C**, **Hantek 365D**, **Hantek 365E** and **Hantek 365F** true-RMS multimeters.
 
 The device connects over USB-dongle and presents itself as a standard CDC-ACM serial port — no proprietary drivers needed:
 0451:16aa Texas Instruments, Inc. TI CC2540 USB CDC
