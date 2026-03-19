@@ -246,6 +246,7 @@ The resulting binary is `hantek365_gui/build/hantek365_gui`.
 
 ### Running
 
+Freshly built binary:
 ```bash
 ./build/hantek365_gui
 ```
