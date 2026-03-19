@@ -63,6 +63,7 @@ Two independent tools are provided:
 
 ```
 ./hantek365.pl -p /dev/ttyACM0 -m VDC -t
+
 Setting mode: VDC (0xa0)
 Mode set.
 Reading measurements. Press Ctrl+C to stop.
