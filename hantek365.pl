@@ -1,7 +1,7 @@
 #!/usr/bin/env perl
 
 #
-# hantek365.pl — Command-line utility for the Hantek 365B/F multimeter
+# hantek365.pl — Command-line utility for the Hantek 365C/D/E/F multimeter
 #
 # The device connects via USB and appears in Linux as a virtual
 # CDC-ACM serial port (/dev/ttyACM0 or similar).
