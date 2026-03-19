@@ -1,4 +1,4 @@
-# Hantek 365B/F — Linux Tools
+# Hantek 365C/D/E/F — Linux Tools
 
 Open-source Linux tools for the **Hantek 365C**, **Hantek 365D**, **Hantek 365E** and **365F** true-RMS multimeters.
 
