@@ -67,7 +67,7 @@ static void applyDarkTheme(QApplication &app)
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    app.setApplicationName("Hantek 365 Monitor");
+    app.setApplicationName("Hantek 365 DMM");
     app.setApplicationVersion("1.0");
 
     applyDarkTheme(app);
