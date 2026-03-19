@@ -250,6 +250,16 @@ The resulting binary is `hantek365_gui/build/hantek365_gui`.
 ./build/hantek365_gui
 ```
 
+The already built binary:
+```bash
+./Hantek_365F-x86_64
+```
+
+The already built AppImage binary:
+```bash
+./Hantek_365F-x86_64.AppImage
+```
+
 Or install system-wide:
 
 ```bash
