@@ -3,8 +3,10 @@
 #
 # hantek365.pl — Command-line utility for the Hantek 365C/D/E/F multimeter
 #
-# The device connects via USB and appears in Linux as a virtual
-# CDC-ACM serial port (/dev/ttyACM0 or similar).
+# The device connects over USB-dongle and presents itself
+# as a standard CDC-ACM serial port (/dev/ttyACM0 or similar)
+# no proprietary drivers needed:
+# 0451:16aa Texas Instruments, Inc. TI CC2540 USB CDC
 #
 # If the device cannot be opened, add yourself to the dialout group:
 #   sudo usermod -aG dialout $USER  (re-login afterwards)
