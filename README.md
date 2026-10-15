@@ -2,8 +2,9 @@
 
 Open-source Linux tools for the **Hantek 365C**, **Hantek 365D**, **Hantek 365E** and **Hantek 365F** true-RMS multimeters.
 
-The device connects over USB-dongle and presents itself as a standard CDC-ACM serial port — no proprietary drivers needed:
-0451:16aa Texas Instruments, Inc. TI CC2540 USB CDC
+The meter connects either through its radio USB dongle or directly with a USB cable — no proprietary drivers needed:
+- radio dongle: standard CDC-ACM serial port, `0451:16aa` Texas Instruments, Inc. TI CC2540 USB CDC
+- USB cable: vendor-specific bulk interface, `0483:5722` Hantek DMM USB, accessed through Linux usbdevfs
 
 Two independent tools are provided:
 
@@ -14,8 +15,27 @@ Two independent tools are provided:
 
 ---
 
+## Download
+
+The GUI is published as an AppImage on the [Releases page](https://github.com/ashevchuk/hantek-365F/releases/latest).
+It bundles Qt and runs on any x86_64 Linux distribution with glibc 2.28 or newer
+(Debian 10+, Ubuntu 18.10+, RHEL/Alma/Rocky 8+, Fedora 29+, current Arch):
+
+```bash
+chmod +x Hantek_365F-x86_64.AppImage
+./Hantek_365F-x86_64.AppImage
+```
+
+Every push and pull request also builds the AppImage; it is attached as an artifact
+to the corresponding [Actions run](https://github.com/ashevchuk/hantek-365F/actions).
+
+The Perl tool needs no build — run `hantek365.pl` directly.
+
+---
+
 ## Table of Contents
 
+- [Download](#download)
 - [Screenshots](#screenshots)
 - [Hardware](#hardware)
 - [Protocol Overview](#protocol-overview)
@@ -27,6 +47,7 @@ Two independent tools are provided:
 - [Qt GUI Application](#qt-gui-application)
   - [Requirements](#requirements-qt)
   - [Building](#building)
+  - [Building the AppImage](#building-the-appimage)
   - [Running](#running)
   - [Interface](#interface)
   - [Responsive Layout](#responsive-layout)
@@ -35,6 +56,7 @@ Two independent tools are provided:
   - [Measurement Packet](#measurement-packet)
   - [Mode Codes](#mode-codes)
 - [Permissions](#permissions)
+- [Project Structure](#project-structure)
 - [License](#license)
 
 ---
@@ -62,18 +84,14 @@ Two independent tools are provided:
 ### CLI Tool
 
 ```
-./hantek365.pl -p /dev/ttyACM0 -m VDC -t
+./hantek365.pl -u -m VDC -t
 
 Setting mode: VDC (0xa0)
 Mode set.
 Reading measurements. Press Ctrl+C to stop.
-2026-03-19 15:23:33 | +034.6 mV  DC AUTO
-2026-03-19 15:23:33 | +015.2 mV  DC AUTO
-2026-03-19 15:23:34 | +015.2 mV  DC AUTO
-2026-03-19 15:23:35 | +015.3 mV  DC AUTO
-2026-03-19 15:23:35 | +015.2 mV  DC AUTO
-2026-03-19 15:23:36 | +009.7 mV  DC AUTO
-2026-03-19 15:23:36 | +017.3 mV  DC AUTO
+2026-10-15 15:08:52.500 | +016.9 mV  DC AUTO
+2026-10-15 15:08:53.102 | +016.9 mV  DC AUTO
+2026-10-15 15:08:53.503 | +016.9 mV  DC AUTO
 ```
 
 *Perl script reading DC voltage with timestamps.*
@@ -85,17 +103,23 @@ Reading measurements. Press Ctrl+C to stop.
 | Property | Value |
 |----------|-------|
 | Supported models | Hantek 365C, Hantek 365D, Hantek 365E, Hantek 365F |
-| USB connection | Texas Instruments, Inc. TI CC2540 USB CDC (virtual serial port) |
-| USB VID:PID | `0451:16aa` |
-| Linux device node | `/dev/ttyACM0` (or `ttyACM1`, …) |
+| Radio dongle | Texas Instruments, Inc. TI CC2540 USB CDC (virtual serial port), `0451:16aa` |
+| Radio dongle device node | `/dev/ttyACM0` (or `ttyACM1`, …) |
+| USB cable | Hantek DMM USB, vendor-specific class, bulk endpoints `0x81` IN / `0x02` OUT, `0483:5722` |
+| USB cable device node | `/dev/bus/usb/BBB/DDD` (bus and device number, see `lsusb`) |
 
-The device requires no special kernel drivers on Linux — the standard `cdc_acm` module handles it.
+The dongle needs no special kernel drivers — the standard `cdc_acm` module handles it.
+The USB cable has no kernel driver at all; both tools talk to it through usbdevfs ioctls
+and need the udev rule described in [Permissions](#permissions).
+
+Both connections carry the same protocol.
 
 ---
 
 ## Protocol Overview
 
-Communication uses a simple binary protocol over the virtual serial port.
+Communication uses a simple binary protocol, identical over the dongle's serial port
+and the USB cable's bulk endpoints.
 
 ### Request/Response cycle
 
@@ -132,13 +156,16 @@ For modes in the range `0xA0–0xE6` the host must **cycle through sub-ranges** 
 ./hantek365.pl [options]
 
 Options:
-  -p, --port PORT       Serial port (default: /dev/ttyACM0)
+  -p, --port PORT       Serial port of the radio dongle (default: /dev/ttyACM0),
+                        or a USB device node /dev/bus/usb/BBB/DDD
+  -u, --usb             Direct USB cable: find the meter automatically
   -m, --mode MODE       Set measurement mode before reading
   -r, --relative        Enable relative (REL) measurement
   -v, --verbose         Print raw packet bytes for debugging
-  -t, --timestamp       Prefix each reading with HH:MM:SS.mmm
+  -t, --timestamp       Prefix each reading with YYYY-MM-DD HH:MM:SS.mmm
   -c, --csv             CSV output: timestamp,value,prefix,unit,flags
   -i, --interval MS     Minimum interval between readings in ms (0 = max speed)
+  -g, --tui             TUI graph mode: scrolling bar chart in the terminal
   -h, --help            Show help and exit
 ```
 
@@ -167,11 +194,17 @@ If `-m` is omitted the script reads whatever mode the multimeter is already in.
 # Temperature (°C) once per second
 ./hantek365.pl -m temp --interval 1000
 
+# DC voltage over the direct USB cable
+./hantek365.pl -u -m VDC -t
+
 # AC voltage on a different port, with raw debug output
 ./hantek365.pl -p /dev/ttyACM1 -m VAC -v
 
 # REL mode — all readings relative to the first
 ./hantek365.pl -m VDC -r -t
+
+# DC voltage as a scrolling bar chart in the terminal
+./hantek365.pl -m VDC --tui
 
 # Pipe into gnuplot or awk
 ./hantek365.pl -m VDC -c | awk -F, '{print $1, $2}'
@@ -182,26 +215,28 @@ If `-m` is omitted the script reads whatever mode the multimeter is already in.
 **Default** (human-readable):
 
 ```
-+1.2345 mV   DC AUTO
-+0.0023 V    DC AUTO
++017.5 mV  DC AUTO
++017.6 mV  DC AUTO
 ```
 
 **With timestamp** (`-t`):
 
 ```
-14:32:01.423  +1.2345 mV   DC AUTO
-14:32:01.624  +1.2346 mV   DC AUTO
+2026-10-15 15:08:52.500 | +016.9 mV  DC AUTO
+2026-10-15 15:08:53.102 | +016.9 mV  DC AUTO
 ```
 
-**CSV** (`-c`):
+**CSV** (`-c`, timestamps always include milliseconds):
 
 ```
 timestamp,value,prefix,unit,flags
-14:32:01.423,1.2345,m,V,DC AUTO
-14:32:01.624,1.2346,m,V,DC AUTO
+2026-10-15 15:08:54.744,+017.1,m,V,DC AUTO
+2026-10-15 15:08:55.345,+017.2,m,V,DC AUTO
 ```
 
-The `value` column is the raw numeric value with the SI prefix still applied (e.g. `1.2345` with prefix `m` = 1.2345 mV). Multiply by the appropriate factor to obtain SI base units.
+The `value` column is the displayed number as sent by the meter: sign and leading zeros included, SI prefix still applied (e.g. `+017.1` with prefix `m` = 17.1 mV). Multiply by the appropriate factor to obtain SI base units.
+
+On overload the meter sends `?` and `:` instead of digits (e.g. `+?0:.?`). The default, `-t` and CSV outputs pass this through unchanged, so a CSV consumer must treat a non-numeric `value` as overload; the TUI shows `OL`.
 
 ---
 
@@ -242,30 +277,31 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-The resulting binary is `hantek365_gui/build/hantek365_gui`.
+The resulting binary is `hantek365_gui/build/hantek365_gui`. It links against the
+system Qt; for a self-contained build use the AppImage.
+
+### Building the AppImage
+
+The release AppImage is built by `ci/build-appimage.sh` inside an AlmaLinux 8 container,
+which fixes the glibc baseline at 2.28. The same script runs in GitHub Actions and locally
+(Docker or Podman, from the repository root):
+
+```bash
+docker run --rm -v "$PWD":/src -w /src almalinux:8.10 ci/build-appimage.sh
+```
+
+The script installs the official Qt 6.8 with `aqtinstall`, builds the GUI and packages it
+with `linuxdeploy` + `linuxdeploy-plugin-qt`. The result is `dist/Hantek_365F-x86_64.AppImage`.
 
 ### Running
 
-Freshly built binary:
 ```bash
-./build/hantek365_gui
+./build/hantek365_gui                 # from hantek365_gui/ after building
+./Hantek_365F-x86_64.AppImage         # downloaded or built AppImage
 ```
 
-The already built binary:
-```bash
-./Hantek_365F-x86_64
-```
-
-The already built AppImage binary:
-```bash
-./Hantek_365F-x86_64.AppImage
-```
-
-Or install system-wide:
-
-```bash
-sudo cmake --install build
-```
+Publishing a release: push a tag `v*` (e.g. `git tag v1.1 && git push origin v1.1`);
+the workflow attaches the AppImage to a new GitHub Release.
 
 ### Interface
 
@@ -298,7 +334,7 @@ sudo cmake --install build
 
 | Control | Description |
 |---------|-------------|
-| Port combo | Select serial port (populated from available system ports) |
+| Port combo | Select serial port of the dongle or `/dev/bus/usb/BBB/DDD` of the USB cable (populated from available system ports and attached meters) |
 | ⟳ | Refresh the port list |
 | Connect / Disconnect | Toggle connection (single button) |
 | Clear | Clear chart data and statistics |
@@ -316,6 +352,7 @@ sudo cmake --install build
 - Y axis: auto-scaling SI prefix (µ / m / k / M), updates as values change
 - Click and drag to zoom (Rectangle rubber band)
 - When measurement unit changes (e.g. V → Ω), chart is cleared automatically
+- Overload readings show `OL` on the value display and are not plotted
 
 **Statistics bar** (updated every 2 seconds):
 
@@ -354,9 +391,11 @@ This allows using the application as a compact always-on-top widget while workin
 Offset  Size  Description
 ──────  ────  ──────────────────────────────────────────────────────────
   0      1    Start marker: 0xA0
-  1      1    Sign byte:  bit 2 = minus (−),  bit 1 = plus (+)
-  2–5    4    ASCII digits of the displayed number (e.g. '1','2','3','4')
-  6      1    Reserved (always 0x00)
+  1      1    Sign: ASCII '+' (0x2B) or '-' (0x2D);
+                 bit 2 (0x04) = minus, bit 1 (0x02) = plus
+  2–5    4    ASCII digits of the displayed number (e.g. '1','2','3','4');
+                 on overload '?' and ':' replace digits (e.g. "?0:?")
+  6      1    ASCII space (0x20)
   7      1    Decimal point position mask:
                  value = (byte − 0x30);  point inserted after digit i
                  where (mask >> i) == 1
@@ -380,7 +419,8 @@ Offset  Size  Description
                  0x20 = Ω  (resistance)
                  0x40 = A  (current)
                  0x80 = V  (voltage)
-12–14   3    Unknown / reserved
+12      1    Unknown, varies between packets
+13–14   2    CR LF (0x0D 0x0A)
 ```
 
 **Special device responses:**
@@ -421,6 +461,8 @@ Modes `0xF0–0xF6` (Special) are sent directly without sub-range cycling.
 
 ## Permissions
 
+### Radio dongle
+
 The device node `/dev/ttyACM0` is owned by the `dialout` group. Add your user to that group to avoid running as root:
 
 ```bash
@@ -439,6 +481,20 @@ id | grep dialout
 # should show dialout in the list
 ```
 
+### USB cable
+
+The usbdevfs node is writable only by root by default. Install the bundled udev rule,
+which grants access to the logged-in desktop user:
+
+```bash
+sudo cp 49-hantek365.rules /etc/udev/rules.d/
+sudo udevadm control --reload
+sudo udevadm trigger --attr-match=idVendor=0483 --attr-match=idProduct=5722
+```
+
+The rule uses `TAG+="uaccess"`, which applies to local seat sessions only; for SSH or
+headless use add `MODE="0660", GROUP="<your group>"` to the rule instead.
+
 ---
 
 ## Project Structure
@@ -446,13 +502,21 @@ id | grep dialout
 ```
 .
 ├── hantek365.pl          Perl command-line utility
+├── 49-hantek365.rules    udev rule for the direct USB cable
+├── ci/
+│   └── build-appimage.sh AppImage build (used by CI and locally)
+├── .github/workflows/
+│   └── build.yml         CI: AppImage on every push/PR, GitHub Release on v* tags
 ├── hantek365_gui/
 │   ├── CMakeLists.txt
 │   ├── main.cpp          Application entry point, dark theme setup
 │   ├── mainwindow.h      Main window declaration
 │   ├── mainwindow.cpp    Main window implementation (UI, chart, slots)
 │   ├── hantekdevice.h    Device abstraction (signals/slots interface)
-│   └── hantekdevice.cpp  Serial port state machine, packet parser
+│   ├── hantekdevice.cpp  Serial port state machine, packet parser
+│   ├── usbbulkport.h     QIODevice over usbdevfs bulk endpoints (USB cable)
+│   ├── usbbulkport.cpp
+│   └── packaging/        Desktop entry and icon for the AppImage
 └── docs/
     └── screenshots/      Screenshots for this README
 ```

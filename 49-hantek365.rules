@@ -1,0 +1,3 @@
+# Hantek 365 direct USB connection (vendor-specific bulk interface).
+# Grants the logged-in desktop user access to the device node.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="5722", TAG+="uaccess"

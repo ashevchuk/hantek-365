@@ -399,15 +399,18 @@ void MainWindow::onMeasurement(const Measurement &m)
     }
     m_currentBaseUnit = m.baseUnit;
 
-    // Add data point to buffer
-    m_data.append({ QDateTime::currentMSecsSinceEpoch(), m.siValue });
-    if (m_data.size() > MAX_POINTS)
-        m_data.removeFirst();
-
     ++m_readingCount;
 
     // Update display
     m_valueLabel->setText(m.display);
+
+    if (m.overload)
+        return;
+
+    // Add data point to buffer
+    m_data.append({ QDateTime::currentMSecsSinceEpoch(), m.siValue });
+    if (m_data.size() > MAX_POINTS)
+        m_data.removeFirst();
 
     // Redraw chart
     updateChart();
@@ -521,9 +524,22 @@ void MainWindow::refreshPortList()
     const QString current = m_portCombo->currentText();
     m_portCombo->clear();
 
+    // A port identified by the meter's USB VID:PID beats any name heuristic
+    QString meterPort;
+
     const auto ports = QSerialPortInfo::availablePorts();
-    for (const auto &info : ports)
+    for (const auto &info : ports) {
         m_portCombo->addItem(info.systemLocation());
+        if (meterPort.isEmpty()
+            && info.vendorIdentifier() == HantekDevice::DONGLE_VID
+            && info.productIdentifier() == HantekDevice::DONGLE_PID)
+            meterPort = info.systemLocation();
+    }
+
+    const QStringList usbNodes = HantekDevice::usbDeviceNodes();
+    m_portCombo->addItems(usbNodes);
+    if (meterPort.isEmpty() && !usbNodes.isEmpty())
+        meterPort = usbNodes.first();
 
     if (m_portCombo->count() == 0)
         m_portCombo->addItem("/dev/ttyACM0");
@@ -532,6 +548,8 @@ void MainWindow::refreshPortList()
     const int prevIdx = m_portCombo->findText(current);
     if (prevIdx >= 0) {
         m_portCombo->setCurrentIndex(prevIdx);
+    } else if (!meterPort.isEmpty()) {
+        m_portCombo->setCurrentIndex(m_portCombo->findText(meterPort));
     } else {
         for (int i = 0; i < m_portCombo->count(); ++i) {
             const QString n = m_portCombo->itemText(i);

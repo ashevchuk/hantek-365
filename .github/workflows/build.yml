@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  APPIMAGE: Hantek_365F-x86_64.AppImage
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build AppImage on AlmaLinux 8 (glibc 2.28)
+        run: docker run --rm -v "$PWD":/src -w /src almalinux:8.10 ci/build-appimage.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.APPIMAGE }}
+          path: dist/${{ env.APPIMAGE }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: appimage
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.APPIMAGE }}
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" "$APPIMAGE"
+          --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

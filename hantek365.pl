@@ -15,6 +15,7 @@
 #   ./hantek365.pl -m VDC -t        # DC voltage with timestamp
 #   ./hantek365.pl -m ohm -c        # resistance output as CSV
 #   ./hantek365.pl -p /dev/ttyACM1 -m temp -v   # different port, debug
+#   ./hantek365.pl -u -m VDC -t     # direct USB cable instead of the dongle
 #
 
 use strict;
@@ -32,6 +33,20 @@ use constant ACK_MODE   => 0xdd;          # mode change acknowledgement
 use constant PKT_OK     => 0xA0;          # valid measurement packet header
 use constant PKT_NODATA => 0xAA;          # no data available (keep-alive)
 use constant PKT_LEN    => 15;            # valid measurement packet length
+
+# ─── Direct USB cable: vendor-specific bulk interface ────────────────────────
+use constant USB_VID         => '0483';
+use constant USB_PID         => '5722';
+use constant USB_EP_IN       => 0x81;
+use constant USB_EP_OUT      => 0x02;
+use constant USB_PACKET_SIZE => 64;       # bulk wMaxPacketSize
+
+# Linux usbdevfs ioctls (linux/usbdevice_fs.h). struct usbdevfs_bulktransfer is
+# { u32 ep; u32 len; u32 timeout_ms; void *data; } with native pointer alignment.
+use constant BULK_STRUCT_FMT => 'I I I x![J] J';
+use constant BULK_STRUCT_LEN => length pack(BULK_STRUCT_FMT, 0, 0, 0, 0);
+use constant USBDEVFS_BULK           => (3 << 30) | (BULK_STRUCT_LEN << 16) | (ord('U') << 8) | 2;
+use constant USBDEVFS_CLAIMINTERFACE => (2 << 30) | (4 << 16) | (ord('U') << 8) | 15;
 
 # ─── Measurement modes (keys lowercase for case-insensitive lookup) ──────────
 my %MODES = (
@@ -66,6 +81,7 @@ my $opt_timestamp = 0;
 my $opt_csv       = 0;
 my $opt_interval  = 0;    # extra delay between readings (ms)
 my $opt_tui       = 0;    # TUI graph mode
+my $opt_usb       = 0;    # direct USB cable
 
 GetOptions(
     'port|p=s'     => \$opt_port,
@@ -76,6 +92,7 @@ GetOptions(
     'csv|c'        => \$opt_csv,
     'interval|i=i' => \$opt_interval,
     'tui|g'        => \$opt_tui,
+    'usb|u'        => \$opt_usb,
     'help|h'       => \&usage,
 ) or die "Try '$0 --help' for help.\n";
 
@@ -85,7 +102,9 @@ sub usage {
 Usage: $prog [options]
 
 Options:
-  -p, --port PORT       Serial port (default: /dev/ttyACM0)
+  -p, --port PORT       Serial port of the radio dongle (default: /dev/ttyACM0),
+                        or a USB device node /dev/bus/usb/BBB/DDD
+  -u, --usb             Direct USB cable: find the meter automatically
   -m, --mode MODE       Set measurement mode
   -r, --relative        Enable relative measurement mode (REL)
   -v, --verbose         Debug output: raw packet bytes
@@ -109,6 +128,7 @@ Examples:
   $prog -m temp --interval 1000   # Temperature once per second
   $prog -p /dev/ttyACM1 -m VAC -v # Use different port with verbose output
   $prog -m VDC --tui              # DC voltage as scrolling graph
+  $prog -u -m VDC -t              # Direct USB cable instead of the dongle
 
 USAGE
     exit 0;
@@ -124,16 +144,45 @@ if ($opt_mode) {
     }
 }
 
-# ─── Open serial port ────────────────────────────────────────────────────────
+# ─── Open device ─────────────────────────────────────────────────────────────
+sub read_sysfs {
+    my ($path) = @_;
+    open(my $f, '<', $path) or die "Cannot read $path: $!\n";
+    chomp(my $v = <$f> // '');
+    return $v;
+}
+
+sub find_usb_device {
+    for my $dir (glob '/sys/bus/usb/devices/*') {
+        next unless -e "$dir/idVendor";
+        next unless read_sysfs("$dir/idVendor")  eq USB_VID
+                 && read_sysfs("$dir/idProduct") eq USB_PID;
+        return sprintf '/dev/bus/usb/%03d/%03d',
+            read_sysfs("$dir/busnum"), read_sysfs("$dir/devnum");
+    }
+    die sprintf "Hantek 365 USB device (%s:%s) not found.\n", USB_VID, USB_PID;
+}
+
+$opt_port = find_usb_device() if $opt_usb;
+my $is_usb = $opt_port =~ m{^/dev/bus/usb/};
+
 sysopen(my $fh, $opt_port, O_RDWR | O_NOCTTY)
     or die "Cannot open '$opt_port': $!\n"
-         . "Make sure the device is connected and you are in the 'dialout' group:\n"
-         . "  sudo usermod -aG dialout \$USER\n";
+         . ($is_usb
+            ? "Install 49-hantek365.rules into /etc/udev/rules.d and replug the meter.\n"
+            : "Make sure the device is connected and you are in the 'dialout' group:\n"
+            . "  sudo usermod -aG dialout \$USER\n");
+
+if ($is_usb) {
+    my $interface = pack('I', 0);
+    ioctl($fh, USBDEVFS_CLAIMINTERFACE, $interface)
+        or die "Cannot claim USB interface of '$opt_port': $!\n";
+}
 
 # Configure port in raw mode via POSIX termios.
 # For CDC-ACM devices the baud rate does not matter — data travels over USB —
 # but raw mode is required for correct binary data transfer.
-{
+unless ($is_usb) {
     my $t = POSIX::Termios->new();
     $t->getattr(fileno($fh));
     $t->setiflag(0);                        # no input processing
@@ -185,27 +234,29 @@ sub get_term_size {
 sub tui_render {
     my ($p, $ts) = @_;
 
-    # Extract numeric value in base units (apply prefix multiplier so that
-    # switching ranges, e.g. V → mV, does not distort the graph scale).
-    (my $numstr = $p->{value}) =~ s/[^0-9.]//g;
-    return unless length($numstr);
+    # On overload the device sends '?' instead of digits
+    my $is_overload = $p->{value} !~ /^[0-9]+\.?[0-9]*$/;
 
-    my %PFX_MULT = (
-        "\xc2\xb5" => 1e-6,   # µ (micro)
-        'n'        => 1e-9,   # nano
-        'm'        => 1e-3,   # milli
-        ''         => 1,
-        'k'        => 1e3,    # kilo
-        'M'        => 1e6,    # Mega
-    );
-    my $mult = $PFX_MULT{$p->{prefix}} // 1;
+    unless ($is_overload) {
+        # Value in base units (apply prefix multiplier so that
+        # switching ranges, e.g. V → mV, does not distort the graph scale).
+        my %PFX_MULT = (
+            "\xc2\xb5" => 1e-6,   # µ (micro)
+            'n'        => 1e-9,   # nano
+            'm'        => 1e-3,   # milli
+            ''         => 1,
+            'k'        => 1e3,    # kilo
+            'M'        => 1e6,    # Mega
+        );
+        my $mult = $PFX_MULT{$p->{prefix}} // 1;
 
-    my $val = ($numstr + 0) * $mult;
-    $val = -$val if $p->{sign} eq '-';
+        my $val = $p->{value} * $mult;
+        $val = -$val if $p->{sign} eq '-';
 
-    push @tui_buf, $val;
-    $tui_min = $val if !defined $tui_min || $val < $tui_min;
-    $tui_max = $val if !defined $tui_max || $val > $tui_max;
+        push @tui_buf, $val;
+        $tui_min = $val if !defined $tui_min || $val < $tui_min;
+        $tui_max = $val if !defined $tui_max || $val > $tui_max;
+    }
 
     my ($cols, $rows) = get_term_size();
     my $bar_w = $cols - TUI_LABEL_W;
@@ -225,9 +276,13 @@ sub tui_render {
     print "\033[H";   # move cursor to top-left
 
     # ── Line 1: current reading ────────────────────────────────────────────────
-    my $reading = sprintf '%s%s %s%s  %s',
-        $p->{sign}, $p->{value}, $p->{prefix}, $p->{unit}, $p->{flags};
+    my $reading = sprintf '%s %s%s  %s',
+        $is_overload ? 'OL' : $p->{sign} . $p->{value},
+        $p->{prefix}, $p->{unit}, $p->{flags};
     printf "\033[1m  %-*s\033[0m\n", $cols - 2, $reading;
+
+    # Nothing to plot until the first numeric reading arrives
+    return unless @tui_buf;
 
     # ── Line 2: timestamp + min/max stats (values in base units) ─────────────
     printf "\033[2m  %s   Min:%-10s Max:%-10s %s\033[0m\n",
@@ -292,10 +347,20 @@ END { print "\033[?25h\n" if $opt_tui }  # restore cursor on exit
 
 # ─── Low-level I/O ───────────────────────────────────────────────────────────
 
+# One synchronous bulk transfer; returns bytes transferred, undef on error ($! set).
+sub usb_bulk {
+    my ($ep, $buf_ref, $timeout_ms) = @_;
+    my $arg = pack(BULK_STRUCT_FMT, $ep, length($$buf_ref), $timeout_ms,
+                   unpack('J', pack('p', $$buf_ref)));
+    my $n = ioctl($fh, USBDEVFS_BULK, $arg);
+    return defined $n ? $n + 0 : undef;
+}
+
 # Write bytes to the device.
 sub dev_write {
     my ($bytes) = @_;
-    my $n = syswrite($fh, $bytes);
+    my $n = $is_usb ? usb_bulk(USB_EP_OUT, \$bytes, 1000)
+                    : syswrite($fh, $bytes);
     die "Device write error: $!\n"
         unless defined $n && $n == length($bytes);
 }
@@ -305,6 +370,7 @@ sub dev_write {
 sub dev_read {
     my ($maxlen, $timeout_sec) = @_;
     $timeout_sec //= 1.0;
+    return usb_read($maxlen, $timeout_sec) if $is_usb;
 
     my $buf      = '';
     my $deadline = time() + $timeout_sec;
@@ -324,6 +390,29 @@ sub dev_read {
         $buf .= $chunk;
     }
     return $buf;
+}
+
+# Bulk transfers carry whole device packets; buffer them so that callers can
+# read the stream byte-wise exactly as from the serial port.
+my $usb_rx = '';
+
+sub usb_read {
+    my ($maxlen, $timeout_sec) = @_;
+    my $deadline = time() + $timeout_sec;
+
+    while (length($usb_rx) < $maxlen) {
+        my $remaining_ms = int(($deadline - time()) * 1000);
+        last if $remaining_ms <= 0;
+
+        my $buf = "\0" x USB_PACKET_SIZE;
+        my $n = usb_bulk(USB_EP_IN, \$buf, $remaining_ms);
+        unless (defined $n) {
+            last if $!{ETIMEDOUT} || $!{EINTR};
+            die "USB read error: $!\n";
+        }
+        $usb_rx .= substr($buf, 0, $n);
+    }
+    return substr($usb_rx, 0, $maxlen, '');
 }
 
 # ─── Set measurement mode ─────────────────────────────────────────────────────

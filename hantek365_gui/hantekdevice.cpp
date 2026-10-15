@@ -4,7 +4,9 @@
 
 HantekDevice::HantekDevice(QObject *parent)
     : QObject(parent)
-    , m_port(new QSerialPort(this))
+    , m_serial(new QSerialPort(this))
+    , m_usb(new UsbBulkPort(this))
+    , m_port(m_serial)
     , m_pollTimer(new QTimer(this))
     , m_modeTimer(new QTimer(this))
 {
@@ -14,7 +16,8 @@ HantekDevice::HantekDevice(QObject *parent)
     m_modeTimer->setInterval(500);   // timeout waiting for 0xDD per step
     m_modeTimer->setSingleShot(true);
 
-    connect(m_port,      &QSerialPort::readyRead,    this, &HantekDevice::onReadyRead);
+    connect(m_serial,    &QSerialPort::readyRead,    this, &HantekDevice::onReadyRead);
+    connect(m_usb,       &UsbBulkPort::readyRead,    this, &HantekDevice::onReadyRead);
     connect(m_pollTimer, &QTimer::timeout,           this, &HantekDevice::onPollTimer);
     connect(m_modeTimer, &QTimer::timeout,           this, [this]() {
         // Mode change acknowledgement timed out
@@ -23,13 +26,27 @@ HantekDevice::HantekDevice(QObject *parent)
         emit statusMessage(tr("Mode change timeout: %1").arg(m_modeName));
     });
 
-    connect(m_port, &QSerialPort::errorOccurred,
+    connect(m_serial, &QSerialPort::errorOccurred,
             this, [this](QSerialPort::SerialPortError err) {
         if (err != QSerialPort::NoError && isConnected()) {
-            emit statusMessage(tr("Port error: %1").arg(m_port->errorString()));
+            emit statusMessage(tr("Port error: %1").arg(m_serial->errorString()));
             disconnectDevice();
         }
     });
+
+    // Queued: the error may be raised from inside m_usb->write()
+    connect(m_usb, &UsbBulkPort::transportError,
+            this, [this](const QString &msg) {
+        if (isConnected()) {
+            emit statusMessage(tr("USB error: %1").arg(msg));
+            disconnectDevice();
+        }
+    }, Qt::QueuedConnection);
+}
+
+QStringList HantekDevice::usbDeviceNodes()
+{
+    return UsbBulkPort::findDevices(USB_VID, USB_PID);
 }
 
 HantekDevice::~HantekDevice()
@@ -44,14 +61,22 @@ void HantekDevice::connectDevice(const QString &portName)
     if (m_port->isOpen())
         m_port->close();
 
-    m_port->setPortName(portName);
-    m_port->setBaudRate(QSerialPort::Baud9600);
-    m_port->setDataBits(QSerialPort::Data8);
-    m_port->setParity(QSerialPort::NoParity);
-    m_port->setStopBits(QSerialPort::OneStop);
-    m_port->setFlowControl(QSerialPort::NoFlowControl);
+    bool opened;
+    if (UsbBulkPort::isUsbNode(portName)) {
+        m_port = m_usb;
+        opened = m_usb->openNode(portName, USB_EP_IN, USB_EP_OUT);
+    } else {
+        m_port = m_serial;
+        m_serial->setPortName(portName);
+        m_serial->setBaudRate(QSerialPort::Baud9600);
+        m_serial->setDataBits(QSerialPort::Data8);
+        m_serial->setParity(QSerialPort::NoParity);
+        m_serial->setStopBits(QSerialPort::OneStop);
+        m_serial->setFlowControl(QSerialPort::NoFlowControl);
+        opened = m_serial->open(QIODevice::ReadWrite);
+    }
 
-    if (!m_port->open(QIODevice::ReadWrite)) {
+    if (!opened) {
         emit statusMessage(tr("Cannot open %1: %2")
                                .arg(portName, m_port->errorString()));
         return;
@@ -255,9 +280,10 @@ Measurement HantekDevice::parsePacket(const QByteArray &pkt) const
             valStr += QLatin1Char('.');
     }
 
+    // On overload the device sends '?' instead of digits
     bool ok = false;
     double numVal = valStr.toDouble(&ok);
-    if (!ok) return m; // "OL" and similar — skip in graph
+    m.overload = !ok;
 
     if (sign & 0x04) numVal = -numVal;
 
@@ -300,8 +326,8 @@ Measurement HantekDevice::parsePacket(const QByteArray &pkt) const
 
     m.siValue  = numVal * pfxMult;
     m.baseUnit = baseUnit;
-    m.display  = signStr + valStr + " " + pfxStr + unitDisp
-                 + "   " + flags.join(" ");
+    m.display  = (m.overload ? QStringLiteral("OL") : signStr + valStr)
+                 + " " + pfxStr + unitDisp + "   " + flags.join(" ");
     m.valid    = true;
     return m;
 }

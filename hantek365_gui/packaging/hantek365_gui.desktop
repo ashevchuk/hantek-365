@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Hantek 365
+Comment=Hantek 365 multimeter monitor
+Exec=hantek365_gui
+Icon=hantek365_gui
+Type=Application
+Categories=Science;Electronics;

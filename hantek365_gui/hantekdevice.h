@@ -2,13 +2,17 @@
 
 #include <QObject>
 #include <QSerialPort>
+#include <QStringList>
 #include <QTimer>
 #include <QString>
 #include <cstdint>
 
+#include "usbbulkport.h"
+
 // Result of parsing one measurement packet
 struct Measurement {
     bool    valid    = false;
+    bool    overload = false; // display shows OL; siValue is meaningless
     double  siValue  = 0.0;   // value in SI base units (V, A, Ohm, °C...)
     QString display;          // display string: "+1.234 mV  DC AUTO"
     QString baseUnit;         // base unit without prefix: "V", "A", "Ω", "°C"...
@@ -25,6 +29,18 @@ public:
     static constexpr uint8_t PKT_OK     = 0xA0;
     static constexpr uint8_t PKT_NODATA = 0xAA;
     static constexpr int     PKT_LEN    = 15;
+
+    // Radio dongle: CDC-ACM serial port
+    static constexpr quint16     DONGLE_VID = 0x0451;
+    static constexpr quint16     DONGLE_PID = 0x16AA;
+
+    // Direct USB cable: vendor-specific bulk interface
+    static constexpr const char *USB_VID    = "0483";
+    static constexpr const char *USB_PID    = "5722";
+    static constexpr uint8_t     USB_EP_IN  = 0x81;
+    static constexpr uint8_t     USB_EP_OUT = 0x02;
+
+    static QStringList usbDeviceNodes();
 
     explicit HantekDevice(QObject *parent = nullptr);
     ~HantekDevice() override;
@@ -61,7 +77,9 @@ private:
     void sendModeStep();
     Measurement parsePacket(const QByteArray &pkt) const;
 
-    QSerialPort *m_port      = nullptr;
+    QSerialPort *m_serial    = nullptr;
+    UsbBulkPort *m_usb       = nullptr;
+    QIODevice   *m_port      = nullptr;   // the active one of m_serial / m_usb
     QTimer      *m_pollTimer = nullptr;   // 200 ms, repeating
     QTimer      *m_modeTimer = nullptr;   // timeout for mode change acknowledgement
 

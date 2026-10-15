@@ -17,6 +17,8 @@ add_executable(hantek365_gui
     mainwindow.cpp
     hantekdevice.h
     hantekdevice.cpp
+    usbbulkport.h
+    usbbulkport.cpp
 )
 
 target_link_libraries(hantek365_gui PRIVATE
