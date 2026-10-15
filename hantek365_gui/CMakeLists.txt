@@ -31,3 +31,10 @@ target_link_libraries(hantek365_gui PRIVATE
 )
 
 target_compile_definitions(hantek365_gui PRIVATE APP_VERSION="${APP_VERSION}")
+
+# GUI tests need Qt Test and Python 3 (meter emulator); off for regular builds
+option(BUILD_TESTING "Build the GUI tests" OFF)
+include(CTest)
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

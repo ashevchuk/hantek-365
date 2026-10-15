@@ -26,7 +26,7 @@ chmod +x Hantek_365F-x86_64.AppImage
 ./Hantek_365F-x86_64.AppImage
 ```
 
-Every push and pull request also builds the AppImage; it is attached as an artifact
+Every push and pull request also runs the tests and builds the AppImage; it is attached as an artifact
 to the corresponding [Actions run](https://github.com/ashevchuk/hantek-365/actions).
 
 The Perl tool needs no build — run `hantek365.pl` directly.
@@ -57,6 +57,7 @@ The Perl tool needs no build — run `hantek365.pl` directly.
   - [Measurement Packet](#measurement-packet)
   - [Mode Codes](#mode-codes)
 - [Permissions](#permissions)
+- [Tests](#tests)
 - [Project Structure](#project-structure)
 - [License](#license)
 
@@ -552,6 +553,31 @@ headless use add `MODE="0660", GROUP="<your group>"` to the rule instead.
 
 ---
 
+## Tests
+
+The tests need no hardware: `tests/meter_emulator.py` serves the meter protocol on a
+pseudo-terminal, including the meter's quirks (REL toggle, stale reading after a command,
+overload packets captured from a real 365F). CI runs both suites on every push and pull
+request; a release is published only when they pass.
+
+CLI and TUI (Perl, Python 3):
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+GUI (Qt Test, offscreen):
+
+```bash
+cmake -S hantek365_gui -B build -DBUILD_TESTING=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
+```
+
+The direct USB transport is not covered: it needs a real meter.
+
+---
+
 ## Project Structure
 
 ```
@@ -560,8 +586,11 @@ headless use add `MODE="0660", GROUP="<your group>"` to the rule instead.
 ├── 49-hantek365.rules    udev rule for the direct USB cable
 ├── ci/
 │   └── build-appimage.sh AppImage build (used by CI and locally)
+├── tests/
+│   ├── meter_emulator.py Fake meter on a pty for the tests
+│   └── test_cli.py       CLI and TUI tests
 ├── .github/workflows/
-│   └── build.yml         CI: AppImage on every push/PR, GitHub Release on v* tags
+│   └── build.yml         CI: tests and AppImage on every push/PR, GitHub Release on v* tags
 ├── hantek365_gui/
 │   ├── CMakeLists.txt
 │   ├── main.cpp          Application entry point, dark theme setup
@@ -571,7 +600,8 @@ headless use add `MODE="0660", GROUP="<your group>"` to the rule instead.
 │   ├── hantekdevice.cpp  Serial port state machine, packet parser
 │   ├── usbbulkport.h     QIODevice over usbdevfs bulk endpoints (USB cable)
 │   ├── usbbulkport.cpp
-│   └── packaging/        Desktop entry and icon for the AppImage
+│   ├── packaging/        Desktop entry and icon for the AppImage
+│   └── tests/            GUI tests (Qt Test, built with -DBUILD_TESTING=ON)
 └── docs/
     └── screenshots/      Screenshots for this README
 ```
