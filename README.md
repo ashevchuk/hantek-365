@@ -17,7 +17,7 @@ Two independent tools are provided:
 
 ## Download
 
-The GUI is published as an AppImage on the [Releases page](https://github.com/ashevchuk/hantek-365F/releases/latest).
+The GUI is published as an AppImage on the [Releases page](https://github.com/ashevchuk/hantek-365/releases/latest).
 It bundles Qt and runs on any x86_64 Linux distribution with glibc 2.28 or newer
 (Debian 10+, Ubuntu 18.10+, RHEL/Alma/Rocky 8+, Fedora 29+, current Arch):
 
@@ -27,7 +27,7 @@ chmod +x Hantek_365F-x86_64.AppImage
 ```
 
 Every push and pull request also builds the AppImage; it is attached as an artifact
-to the corresponding [Actions run](https://github.com/ashevchuk/hantek-365F/actions).
+to the corresponding [Actions run](https://github.com/ashevchuk/hantek-365/actions).
 
 The Perl tool needs no build — run `hantek365.pl` directly.
 
