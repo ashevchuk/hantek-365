@@ -4,7 +4,8 @@
 # same baseline, so the AppImage runs on any distribution with glibc >= 2.28.
 #
 # Run from the repository root:
-#   docker run --rm -v "$PWD":/src -w /src almalinux:8.10 ci/build-appimage.sh
+#   docker run --rm -v "$PWD":/src -w /src -e APP_VERSION=1.2 almalinux:8.10 ci/build-appimage.sh
+# APP_VERSION is shown in the window title and defaults to "dev".
 
 set -euo pipefail
 
@@ -13,6 +14,7 @@ AQTINSTALL_VERSION=3.3.0
 LINUXDEPLOY_URL=https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
 LINUXDEPLOY_QT_URL=https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage
 
+APP_VERSION=${APP_VERSION:-dev}
 SRC_DIR=$PWD
 WORK_DIR=${WORK_DIR:-/tmp/appimage-build}
 OUTPUT_DIR=${OUTPUT_DIR:-$SRC_DIR/dist}
@@ -38,7 +40,8 @@ python3.11 -m aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 \
 QT_DIR=$WORK_DIR/qt/$QT_VERSION/gcc_64
 
 cmake -S "$SRC_DIR/hantek365_gui" -B "$WORK_DIR/build" \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR"
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR" \
+    -DAPP_VERSION="$APP_VERSION"
 cmake --build "$WORK_DIR/build" -j"$(nproc)"
 
 mkdir -p "$WORK_DIR/tools"

@@ -68,7 +68,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("Hantek 365 DMM");
-    app.setApplicationVersion("1.0");
+    app.setApplicationVersion(APP_VERSION);
 
     applyDarkTheme(app);
 

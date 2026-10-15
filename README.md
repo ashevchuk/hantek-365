@@ -293,6 +293,10 @@ docker run --rm -v "$PWD":/src -w /src almalinux:8.10 ci/build-appimage.sh
 The script installs the official Qt 6.8 with `aqtinstall`, builds the GUI and packages it
 with `linuxdeploy` + `linuxdeploy-plugin-qt`. The result is `dist/Hantek_365F-x86_64.AppImage`.
 
+The version shown in the window title comes from `APP_VERSION` (`-e APP_VERSION=1.2` for the
+script, `-DAPP_VERSION=1.2` for a plain CMake build) and defaults to `dev`. CI sets it from the
+tag (`v1.2` → `1.2`), or to `dev-<commit>` for untagged builds.
+
 ### Running
 
 ```bash

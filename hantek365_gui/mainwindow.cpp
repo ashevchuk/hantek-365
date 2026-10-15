@@ -43,7 +43,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_device(new HantekDevice(this))
     , m_statsTimer(new QTimer(this))
 {
-    setWindowTitle(tr("Hantek 365 Monitor"));
+    setWindowTitle(tr("Hantek 365 Monitor %1").arg(QApplication::applicationVersion()));
     setMinimumSize(200, 80);
 
     setupUI();

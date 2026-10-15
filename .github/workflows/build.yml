@@ -18,8 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Derive version from the tag
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "APP_VERSION=dev-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+
       - name: Build AppImage on AlmaLinux 8 (glibc 2.28)
-        run: docker run --rm -v "$PWD":/src -w /src almalinux:8.10 ci/build-appimage.sh
+        run: >
+          docker run --rm -v "$PWD":/src -w /src -e APP_VERSION
+          almalinux:8.10 ci/build-appimage.sh
 
       - uses: actions/upload-artifact@v7
         with:

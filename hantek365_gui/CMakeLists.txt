@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(Hantek365GUI VERSION 1.0 LANGUAGES CXX)
+project(Hantek365GUI LANGUAGES CXX)
+
+# CI passes the release tag; local builds report "dev"
+set(APP_VERSION "dev" CACHE STRING "Application version shown in the window title")
 
 # Arch Linux: sudo pacman -S qt6-base qt6-serialport qt6-charts
 
@@ -26,3 +29,5 @@ target_link_libraries(hantek365_gui PRIVATE
     Qt6::SerialPort
     Qt6::Charts
 )
+
+target_compile_definitions(hantek365_gui PRIVATE APP_VERSION="${APP_VERSION}")
