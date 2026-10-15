@@ -10,7 +10,7 @@ Two independent tools are provided:
 
 | Tool | Language | Description |
 |------|----------|-------------|
-| `hantek365.pl` | Perl | Command-line reader with CSV/timestamp output |
+| `hantek365.pl` | Perl | Command-line reader with CSV/timestamp output and a terminal graph mode |
 | `hantek365_gui/` | C++ / Qt 6 | Desktop GUI with real-time chart and mode switching |
 
 ---
@@ -44,6 +44,7 @@ The Perl tool needs no build — run `hantek365.pl` directly.
   - [Usage](#usage)
   - [Examples](#examples)
   - [Output Formats](#output-formats)
+  - [TUI Graph Mode](#tui-graph-mode)
 - [Qt GUI Application](#qt-gui-application)
   - [Requirements](#requirements-qt)
   - [Building](#building)
@@ -69,11 +70,11 @@ The Perl tool needs no build — run `hantek365.pl` directly.
 
 *Real-time voltage chart with mode buttons, toolbar, and statistics bar.*
 
-### GUI — Compact Mode (toolbar and chart only)
+### GUI — Mode Panel Hidden
 
 ![GUI compact](docs/screenshots/gui_compact.png)
 
-*Window resized below 400 px height: mode panel automatically hide.*
+*Mode panel hidden with the Modes ▼ button, leaving more room for the chart.*
 
 ### GUI — Minimal Mode (value only)
 
@@ -139,6 +140,11 @@ Device → Host: [0xDD]              acknowledgement
 ```
 
 For modes in the range `0xA0–0xE6` the host must **cycle through sub-ranges** starting from 0 up to the target nibble, waiting for `0xDD` after each step (50 ms between steps). Special modes `0xF0–0xF6` (diode, cap, continuity, temperature) are sent directly without cycling.
+
+After a mode change or a REL toggle the meter's first reading is stale: the previous
+display's digits with the new range and no decimal point (342.1 mV becomes `3421 V`),
+followed by a half-settled value. Readings are clean about 1 s after the acknowledgement,
+so both tools drop readings for 1 s after these commands.
 
 ---
 
@@ -237,6 +243,46 @@ timestamp,value,prefix,unit,flags
 The `value` column is the displayed number as sent by the meter: sign and leading zeros included, SI prefix still applied (e.g. `+017.1` with prefix `m` = 17.1 mV). Multiply by the appropriate factor to obtain SI base units.
 
 On overload the meter sends `?` and `:` instead of digits (e.g. `+?0:.?`). The default, `-t` and CSV outputs pass this through unchanged, so a CSV consumer must treat a non-numeric `value` as overload; the TUI shows `OL`.
+
+### TUI Graph Mode
+
+`--tui` (`-g`) turns the terminal into a live bar chart — handy over SSH or on a machine
+without a desktop:
+
+```bash
+./hantek365.pl -u --tui            # USB cable
+./hantek365.pl -m VDC --tui        # radio dongle, select DC voltage first
+```
+
+```
+  +027.9 mV  DC AUTO
+  2026-10-15 16:13:17.738   Min: 26.3 mV   Max: 27.9 mV
+────────────────────────────────────────────────────────────────────────
+   27.9 m│                                                         ▃▃▃██
+         │                                                   ▁▁▁▁▁▆█████
+         │                                                ▄▄▄███████████
+         │                                            ▂▂▂▇██████████████
+         │                                         ▅▅▅██████████████████
+   27.1 m│                                     ▃▃▃██████████████████████
+         │                                ▁▁▁▆▆█████████████████████████
+         │                               ▄██████████████████████████████
+         │                      ▂▂▂▂▇▇▇▇▇███████████████████████████████
+   26.3 m│                     ▅████████████████████████████████████████
+         └──────────────────────────────────────────────────────────────
+```
+
+- Line 1 is the current reading; line 2 the time of the last reading and the min/max of
+  the readings currently on screen.
+- One column per reading, newest on the right; the chart is as wide as the terminal
+  minus the 10-column axis. The vertical scale spans the min/max on screen, with
+  1/8-cell resolution.
+- Values are scaled across range changes (V ↔ mV), so the chart stays continuous;
+  a change of unit (e.g. V → Ω) starts a new chart.
+- Overload shows `OL` on line 1 and is not plotted.
+- Resizing the terminal redraws the screen; Ctrl+C exits and restores the cursor.
+- `-i MS` slows down the sampling and so stretches the time span on screen.
+- Messages go to stderr and are drawn over the chart; with `-v`, redirect them:
+  `./hantek365.pl -u --tui -v 2>debug.log`.
 
 ---
 
@@ -342,9 +388,12 @@ the workflow attaches the AppImage to a new GitHub Release.
 | ⟳ | Refresh the port list |
 | Connect / Disconnect | Toggle connection (single button) |
 | Clear | Clear chart data and statistics |
-| REL | Toggle relative measurement mode on the device |
-| ⏸ Pause / ▶ Resume | Freeze/unfreeze data acquisition |
+| REL | Toggle relative measurement mode on the meter; the button shows the REL state reported by the meter |
+| ⏸ Pause / ▶ Resume | Freeze/unfreeze data acquisition; a mode selected while paused is applied, polling stays paused |
 | Modes ▲ / ▼ | Show or hide the bottom mode panel |
+
+**Mode buttons:** the highlighted button is the mode last acknowledged by the meter.
+A click only sends the request; if the meter does not acknowledge it, no mode is highlighted.
 
 **Behaviour on connect:**
 - Auto-selects **VDC** mode 400 ms after connecting (enough time for the device to settle)
@@ -354,7 +403,8 @@ the workflow attaches the AppImage to a new GitHub Release.
 - Up to 500 data points stored (ring buffer)
 - X axis: real-time clock (`hh:mm:ss`)
 - Y axis: auto-scaling SI prefix (µ / m / k / M), updates as values change
-- Click and drag to zoom (Rectangle rubber band)
+- Click and drag to zoom (rectangle rubber band); the zoomed view stays while new readings arrive
+- Right click returns to the auto-scrolling view
 - When measurement unit changes (e.g. V → Ω), chart is cleared automatically
 - Overload readings show `OL` on the value display and are not plotted
 
@@ -386,6 +436,7 @@ This allows using the application as a compact always-on-top widget while workin
 |-------|-------------|
 | `01 0F` | Poll: request current measurement |
 | `03 XX` | Set mode/sub-range (`XX` = mode code, see table below) |
+| `03 F3` | Toggle REL; the current state is the REL flag in every measurement packet |
 
 ### Measurement Packet
 

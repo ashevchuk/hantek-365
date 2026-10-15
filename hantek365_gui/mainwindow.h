@@ -45,7 +45,7 @@ private slots:
     void onModeChanged(const QString &modeName);
     void onStatusMessage(const QString &msg);
     void onModeButtonClicked(quint8 code, const QString &name);
-    void onRelativeToggled(bool checked);
+    void onRelativeClicked(bool checked);
     void onPauseToggled(bool paused);
     void onToggleModes();
     void onClearClicked();
@@ -58,6 +58,9 @@ private:
     void setupModeButtons();
     void updateChart();
     QString formatSI(double val, const QString &baseUnit) const;
+    void showActiveMode();
+
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     void resizeEvent(QResizeEvent *e) override;
 
@@ -73,6 +76,7 @@ private:
     QButtonGroup *m_modeGroup       = nullptr;
     QFrame       *m_modesFrame      = nullptr; // bottom mode panel
     bool          m_modesVisible    = true;    // user-requested modes visibility
+    QString       m_activeMode;                // last mode acknowledged by the meter
 
     // ── Chart ───────────────────────────────────────────────────────────────
     QChart        *m_chart     = nullptr;
@@ -80,6 +84,8 @@ private:
     QLineSeries   *m_series    = nullptr;
     QDateTimeAxis *m_axisX     = nullptr;
     QValueAxis    *m_axisY     = nullptr;
+    bool           m_autoRange = true;    // false while the user is zoomed in
+    QPoint         m_zoomPressPos;
 
     // ── Data ────────────────────────────────────────────────────────────────
     static constexpr int MAX_POINTS = 500;

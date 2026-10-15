@@ -25,6 +25,7 @@ use POSIX qw(:termios_h strftime);
 use Fcntl qw(O_RDWR O_NOCTTY);
 use Getopt::Long qw(:config no_ignore_case bundling);
 use Time::HiRes qw(time usleep);
+use List::Util qw(min max);
 
 # ─── Protocol constants ─────────────────────────────────────────────────────
 use constant CMD_MODE   => 0x03;          # command type byte for mode selection
@@ -33,6 +34,11 @@ use constant ACK_MODE   => 0xdd;          # mode change acknowledgement
 use constant PKT_OK     => 0xA0;          # valid measurement packet header
 use constant PKT_NODATA => 0xAA;          # no data available (keep-alive)
 use constant PKT_LEN    => 15;            # valid measurement packet length
+
+# After a mode or REL change the meter first reports its previous display with
+# the new range (e.g. 342.1 mV as "3421 V"), then a half-settled value;
+# readings are clean about 1 s after the acknowledgement.
+use constant SETTLE_SEC => 1.0;
 
 # ─── Direct USB cable: vendor-specific bulk interface ────────────────────────
 use constant USB_VID         => '0483';
@@ -219,7 +225,25 @@ use constant TUI_LABEL_W => 10;  # columns reserved for y-axis labels + │ sepa
 my @tui_buf         = ();
 my $tui_min         = undef;
 my $tui_max         = undef;
-my $tui_initialized = 0;
+my $tui_unit        = '';    # graph is restarted when the unit changes
+my $tui_term_size   = '';    # screen is cleared when the terminal is resized
+
+# Value in base units → "29.4 m" style: 4 significant digits and an SI prefix.
+sub si_format {
+    my ($v) = @_;
+    for my $p ([1e6, 'M'], [1e3, 'k'], [1, ''], [1e-3, 'm'], [1e-6, "\xc2\xb5"], [1e-9, 'n']) {
+        return sprintf('%.4g %s', $v / $p->[0], $p->[1]) if abs($v) >= $p->[0];
+    }
+    return sprintf('%.4g ', $v);
+}
+
+# Right-align to $width terminal columns; the script handles bytes, so count
+# UTF-8 characters (non-continuation bytes) rather than length().
+sub pad_left {
+    my ($s, $width) = @_;
+    my $chars = () = $s =~ /[^\x80-\xbf]/g;
+    return (' ' x ($width - $chars)) . $s;
+}
 
 # Get terminal dimensions via TIOCGWINSZ ioctl (Linux).
 sub get_term_size {
@@ -236,6 +260,11 @@ sub tui_render {
 
     # On overload the device sends '?' instead of digits
     my $is_overload = $p->{value} !~ /^[0-9]+\.?[0-9]*$/;
+
+    if ($p->{unit} ne $tui_unit) {
+        @tui_buf  = ();
+        $tui_unit = $p->{unit};
+    }
 
     unless ($is_overload) {
         # Value in base units (apply prefix multiplier so that
@@ -254,8 +283,6 @@ sub tui_render {
         $val = -$val if $p->{sign} eq '-';
 
         push @tui_buf, $val;
-        $tui_min = $val if !defined $tui_min || $val < $tui_min;
-        $tui_max = $val if !defined $tui_max || $val > $tui_max;
     }
 
     my ($cols, $rows) = get_term_size();
@@ -264,14 +291,15 @@ sub tui_render {
 
     # Keep rolling buffer at most $bar_w entries
     splice @tui_buf, 0, @tui_buf - $bar_w if @tui_buf > $bar_w;
+    ($tui_min, $tui_max) = (min(@tui_buf), max(@tui_buf)) if @tui_buf;
 
     my $graph_rows = $rows - 4;   # 3 header lines + 1 x-axis line
     $graph_rows = 2 if $graph_rows < 2;
 
-    # First call: clear screen and hide cursor
-    if (!$tui_initialized) {
+    # First call or terminal resized: clear screen and hide cursor
+    if ("${cols}x$rows" ne $tui_term_size) {
         print "\033[2J\033[?25l";
-        $tui_initialized = 1;
+        $tui_term_size = "${cols}x$rows";
     }
     print "\033[H";   # move cursor to top-left
 
@@ -279,20 +307,19 @@ sub tui_render {
     my $reading = sprintf '%s %s%s  %s',
         $is_overload ? 'OL' : $p->{sign} . $p->{value},
         $p->{prefix}, $p->{unit}, $p->{flags};
-    printf "\033[1m  %-*s\033[0m\n", $cols - 2, $reading;
+    printf "\033[1m  %-*s\033[0m\033[K\n", $cols - 2, $reading;
 
     # Nothing to plot until the first numeric reading arrives
     return unless @tui_buf;
 
-    # ── Line 2: timestamp + min/max stats (values in base units) ─────────────
-    printf "\033[2m  %s   Min:%-10s Max:%-10s %s\033[0m\n",
+    # ── Line 2: timestamp + min/max stats (SI-prefixed) ──────────────────────
+    printf "\033[2m  %s   Min: %s%s   Max: %s%s\033[0m\033[K\n",
         $ts,
-        sprintf('%.5g', $tui_min),
-        sprintf('%.5g', $tui_max),
-        $p->{unit};
+        si_format($tui_min), $p->{unit},
+        si_format($tui_max), $p->{unit};
 
     # ── Line 3: separator ──────────────────────────────────────────────────────
-    print "\033[2m" . ("\xe2\x94\x80" x $cols) . "\033[0m\n";  # ─ × cols
+    print "\033[2m" . ("\xe2\x94\x80" x $cols) . "\033[0m\033[K\n";  # ─ × cols
 
     # ── Graph ──────────────────────────────────────────────────────────────────
     my $range = $tui_max - $tui_min;
@@ -331,15 +358,15 @@ sub tui_render {
     # Print graph rows with y-axis labels on the left
     for my $r (0 .. $graph_rows - 1) {
         my $label = '';
-        if    ($r == 0)                    { $label = sprintf '%.4g', $tui_max }
-        elsif ($r == $graph_rows - 1)      { $label = sprintf '%.4g', $tui_min }
-        elsif ($r == int($graph_rows / 2)) { $label = sprintf '%.4g', ($tui_min + $tui_max) / 2 }
-        printf "\033[2m%9s\xe2\x94\x82\033[0m%s\n",  # │
-            $label, join('', @{$canvas[$r]});
+        if    ($r == 0)                    { $label = si_format($tui_max) }
+        elsif ($r == $graph_rows - 1)      { $label = si_format($tui_min) }
+        elsif ($r == int($graph_rows / 2)) { $label = si_format(($tui_min + $tui_max) / 2) }
+        printf "\033[2m%s\xe2\x94\x82\033[0m%s\033[K\n",  # │
+            pad_left($label, TUI_LABEL_W - 1), join('', @{$canvas[$r]});
     }
 
     # X-axis line
-    printf "\033[2m%9s\xe2\x94\x94%s\033[0m",        # └ + ─ × bar_w
+    printf "\033[2m%9s\xe2\x94\x94%s\033[0m\033[K",  # └ + ─ × bar_w
         '', "\xe2\x94\x80" x $bar_w;
 }
 
@@ -419,6 +446,8 @@ sub usb_read {
 # Protocol: for modes 0xA0–0xE6 cycle through sub-ranges from 0 to the target,
 # sending [0x03, (base | i)] and expecting 0xdd for each step.
 # For special modes 0xF0–0xF6 send directly.
+my $last_command_at = 0;   # time of the last mode or REL change, for SETTLE_SEC
+
 if ($selected_mode) {
     printf STDERR "Setting mode: %s (0x%02x)\n", uc($opt_mode), $selected_mode;
 
@@ -438,6 +467,7 @@ if ($selected_mode) {
         if (length($resp) == 1 && ord($resp) == ACK_MODE) {
             usleep(50_000);  # 50 ms pause as in the original C code
             if ($current == $selected_mode) {
+                $last_command_at = time();
                 print STDERR "Mode set.\n";
                 $mode_set = 1;
                 last;
@@ -458,14 +488,55 @@ if ($selected_mode) {
 }
 
 # ─── Relative measurement mode (REL) ────────────────────────────────────────
+# Poll until a measurement packet arrives; returns it parsed, or undef on timeout.
+sub poll_packet {
+    my ($timeout_sec) = @_;
+    my $deadline = time() + $timeout_sec;
+    while (time() < $deadline) {
+        dev_write(CMD_GET);
+        my $hdr = dev_read(1, 1.0);
+        if (length($hdr) && ord($hdr) == PKT_OK) {
+            my $p = parse_packet($hdr . dev_read(PKT_LEN - 1, 1.0));
+            return $p if $p;
+        } else {
+            usleep(200_000);
+        }
+    }
+    return undef;
+}
+
+# First reading taken once the meter has settled after a command (see SETTLE_SEC).
+sub poll_settled {
+    my $until = time() + SETTLE_SEC;
+    while (1) {
+        my $p = poll_packet(3.0) // return undef;
+        return $p if time() >= $until;
+    }
+}
+
+sub rel_active { $_[0]{flags} =~ /\bREL\b/ }
+
+# 03 F3 toggles REL, so check the state reported by the meter first.
 if ($opt_relative) {
-    print STDERR "Enabling relative measurement mode...\n";
-    dev_write(chr(CMD_MODE) . chr(0xf3));
-    my $resp = dev_read(1, 0.5);
-    if (length($resp) == 1 && ord($resp) == ACK_MODE) {
-        print STDERR "REL mode enabled.\n";
+    my $p = ($selected_mode ? poll_settled() : poll_packet(3.0))
+        // die "No reading from the meter; cannot check the REL state.\n";
+
+    if (rel_active($p)) {
+        print STDERR "REL mode already enabled.\n";
     } else {
-        warn "Failed to enable REL mode.\n";
+        print STDERR "Enabling relative measurement mode...\n";
+        dev_write(chr(CMD_MODE) . chr(0xf3));
+        my $resp = dev_read(1, 0.5);
+        $last_command_at = time();
+        warn "Warning: unexpected device response to the REL request.\n"
+            unless length($resp) == 1 && ord($resp) == ACK_MODE;
+
+        $p = poll_settled();
+        if ($p && rel_active($p)) {
+            print STDERR "REL mode enabled.\n";
+        } else {
+            warn "Warning: REL mode did not turn on.\n";
+        }
     }
 }
 
@@ -562,6 +633,8 @@ if ($opt_csv) {
 }
 
 # ─── Main reading loop ───────────────────────────────────────────────────────
+my $settle_until = $last_command_at + SETTLE_SEC;
+
 print STDERR "Reading measurements. Press Ctrl+C to stop.\n" unless $opt_tui;
 
 my $next_read = time();
@@ -616,6 +689,7 @@ while ($running) {
             warn "Failed to parse packet.\n" if $opt_verbose;
             next;
         }
+        next if time() < $settle_until;
 
         my $now = time();
         my $ms  = int(($now - int($now)) * 1000);

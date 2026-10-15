@@ -7,6 +7,8 @@
 #include <QFont>
 #include <QDateTime>
 #include <QResizeEvent>
+#include <QMouseEvent>
+#include <QStyle>
 #include <QSerialPortInfo>
 #include <QStatusBar>
 #include <QGraphicsLayout>
@@ -40,11 +42,12 @@ MainWindow::~MainWindow()
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
-    , m_device(new HantekDevice(this))
     , m_statsTimer(new QTimer(this))
+    , m_device(new HantekDevice(this))
 {
     setWindowTitle(tr("Hantek 365 Monitor %1").arg(QApplication::applicationVersion()));
     setMinimumSize(200, 80);
+    resize(960, 680);   // below ~600 px height the chart axis labels get elided
 
     setupUI();
     setupChart();
@@ -64,6 +67,11 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onConnectionChanged);
     connect(m_device, &HantekDevice::modeChanged,
             this, &MainWindow::onModeChanged);
+    connect(m_device, &HantekDevice::modeChangeFailed, this, [this]() {
+        // The meter may have stopped at an intermediate sub-range
+        m_activeMode.clear();
+        showActiveMode();
+    });
     connect(m_device, &HantekDevice::statusMessage,
             this, &MainWindow::onStatusMessage);
 
@@ -95,7 +103,9 @@ void MainWindow::setupUI()
     m_portCombo->setMinimumWidth(140);
     tbLayout->addWidget(m_portCombo);
 
-    auto *btnRefresh = new QPushButton(tr("⟳"), toolbar);
+    // A style icon instead of a glyph: "⟳" is missing from many system fonts
+    auto *btnRefresh = new QPushButton(toolbar);
+    btnRefresh->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     btnRefresh->setFixedWidth(28);
     btnRefresh->setToolTip(tr("Refresh port list"));
     connect(btnRefresh, &QPushButton::clicked, this, &MainWindow::refreshPortList);
@@ -119,7 +129,8 @@ void MainWindow::setupUI()
     m_cbRelative = new QPushButton(tr("REL"), toolbar);
     m_cbRelative->setCheckable(true);
     m_cbRelative->setToolTip(tr("Relative measurement mode"));
-    connect(m_cbRelative, &QPushButton::toggled, this, &MainWindow::onRelativeToggled);
+    // clicked, not toggled: the checked state is also set from incoming packets
+    connect(m_cbRelative, &QPushButton::clicked, this, &MainWindow::onRelativeClicked);
     tbLayout->addWidget(m_cbRelative);
 
     tbLayout->addSpacing(8);
@@ -216,6 +227,7 @@ void MainWindow::setupChart()
     m_chartView = new QChartView(m_chart);
     m_chartView->setRenderHint(QPainter::Antialiasing);
     m_chartView->setRubberBand(QChartView::RectangleRubberBand);
+    m_chartView->viewport()->installEventFilter(this);
 
     // Add chart and stats to main layout
     auto *central   = centralWidget();
@@ -229,7 +241,8 @@ void MainWindow::setupChart()
 void MainWindow::setupModeButtons()
 {
     m_modeGroup = new QButtonGroup(this);
-    m_modeGroup->setExclusive(true);
+    // Checked state is driven by acknowledgements from the meter, not by clicks
+    m_modeGroup->setExclusive(false);
 
     m_modesFrame = new QFrame(centralWidget());
     m_modesFrame->setFrameShape(QFrame::StyledPanel);
@@ -306,6 +319,9 @@ void MainWindow::onConnectionChanged(bool connected)
     m_btnPause->setEnabled(connected);
     if (!connected) {
         m_btnPause->setChecked(false); // clear pause on disconnect
+        m_cbRelative->setChecked(false);
+        m_activeMode.clear();
+        showActiveMode();
     }
 
     if (connected) {
@@ -328,17 +344,19 @@ void MainWindow::onConnectionChanged(bool connected)
 void MainWindow::onModeButtonClicked(quint8 code, const QString &name)
 {
     m_device->setMode(code, name);
+    showActiveMode();   // undo the check the click itself caused
 }
 
 void MainWindow::onModeChanged(const QString &modeName)
 {
-    // Highlight the active button
-    for (auto *btn : m_modeGroup->buttons()) {
-        if (btn->text() == modeName) {
-            btn->setChecked(true);
-            break;
-        }
-    }
+    m_activeMode = modeName;
+    showActiveMode();
+}
+
+void MainWindow::showActiveMode()
+{
+    for (auto *btn : m_modeGroup->buttons())
+        btn->setChecked(btn->text() == m_activeMode);
 }
 
 void MainWindow::onPauseToggled(bool paused)
@@ -366,9 +384,10 @@ void MainWindow::onToggleModes()
     m_btnToggleModes->setText(m_modesVisible ? tr("Modes ▲") : tr("Modes ▼"));
 }
 
-void MainWindow::onRelativeToggled(bool checked)
+void MainWindow::onRelativeClicked(bool checked)
 {
-    Q_UNUSED(checked)
+    // Keep the previous state until the meter reports the REL flag
+    m_cbRelative->setChecked(!checked);
     m_device->setRelative();
 }
 
@@ -378,6 +397,7 @@ void MainWindow::onClearClicked()
     m_readingCount = 0;
     m_series->clear();
     m_statsLabel->setText("—");
+    m_autoRange = true;
     const auto now = QDateTime::currentDateTime();
     m_axisX->setRange(now.addSecs(-30), now);
     m_axisY->setRange(-1, 1);
@@ -396,6 +416,7 @@ void MainWindow::onMeasurement(const Measurement &m)
     if (!m_currentBaseUnit.isEmpty() && m_currentBaseUnit != m.baseUnit) {
         m_data.clear();
         m_series->clear();
+        m_autoRange = true;
     }
     m_currentBaseUnit = m.baseUnit;
 
@@ -403,6 +424,7 @@ void MainWindow::onMeasurement(const Measurement &m)
 
     // Update display
     m_valueLabel->setText(m.display);
+    m_cbRelative->setChecked(m.relative);
 
     if (m.overload)
         return;
@@ -449,6 +471,9 @@ void MainWindow::updateChart()
     }
 
     m_series->replace(points);
+
+    if (!m_autoRange)
+        return;
 
     // Update axes
     m_axisX->setRange(
@@ -576,4 +601,28 @@ QString MainWindow::formatSI(double val, const QString &baseUnit) const
     else                  { s = val;        pfx = "";            }
 
     return QString::number(s, 'g', 5) + " " + pfx + baseUnit;
+}
+
+// Left-drag zooms (QChartView rubber band) and freezes the axes;
+// right click returns to auto-scrolling instead of QChartView's zoom-out step.
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched != m_chartView->viewport())
+        return QMainWindow::eventFilter(watched, event);
+
+    auto *me = static_cast<QMouseEvent *>(event);
+    if (event->type() == QEvent::MouseButtonPress && me->button() == Qt::LeftButton) {
+        m_zoomPressPos = me->position().toPoint();
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+        if (me->button() == Qt::LeftButton) {
+            const int dragged = (me->position().toPoint() - m_zoomPressPos).manhattanLength();
+            if (dragged >= QApplication::startDragDistance())
+                m_autoRange = false;
+        } else if (me->button() == Qt::RightButton) {
+            m_autoRange = true;
+            updateChart();
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }

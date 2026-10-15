@@ -22,7 +22,9 @@ HantekDevice::HantekDevice(QObject *parent)
     connect(m_modeTimer, &QTimer::timeout,           this, [this]() {
         // Mode change acknowledgement timed out
         m_state = State::Polling;
-        m_pollTimer->start();
+        if (!m_paused)
+            m_pollTimer->start();
+        emit modeChangeFailed();
         emit statusMessage(tr("Mode change timeout: %1").arg(m_modeName));
     });
 
@@ -83,6 +85,7 @@ void HantekDevice::connectDevice(const QString &portName)
     }
 
     m_readBuf.clear();
+    m_paused = false;
     m_state = State::Polling;
     m_pollTimer->start();
 
@@ -123,6 +126,7 @@ void HantekDevice::setMode(uint8_t modeCode, const QString &modeName)
 void HantekDevice::setPaused(bool paused)
 {
     if (!isConnected()) return;
+    m_paused = paused;
     if (paused) {
         m_pollTimer->stop();
         m_readBuf.clear();
@@ -135,12 +139,13 @@ void HantekDevice::setPaused(bool paused)
 
 void HantekDevice::setRelative()
 {
-    if (m_state != State::Polling)
+    if (m_state != State::Polling && m_state != State::WaitingPollResp)
         return;
     QByteArray cmd;
     cmd.append(char(CMD_MODE));
     cmd.append(char(0xF3));
     m_port->write(cmd);
+    m_settle.setRemainingTime(SETTLE_MS);
     emit statusMessage(tr("REL — request sent"));
 }
 
@@ -197,8 +202,10 @@ void HantekDevice::onReadyRead()
                                                 : ((m_targetMode & 0xF0) | (m_modeStep & 0x0F));
             if (current == m_targetMode || isSpecial) {
                 // Target mode set successfully
+                m_settle.setRemainingTime(SETTLE_MS);
                 m_state = State::Polling;
-                m_pollTimer->start();
+                if (!m_paused)
+                    m_pollTimer->start();
                 emit modeChanged(m_modeName);
                 emit statusMessage(tr("Mode: %1").arg(m_modeName));
             } else {
@@ -232,7 +239,7 @@ void HantekDevice::onReadyRead()
             m_readBuf.remove(0, PKT_LEN);
 
             const Measurement meas = parsePacket(pkt);
-            if (meas.valid)
+            if (meas.valid && m_settle.hasExpired())
                 emit measurementReceived(meas);
 
             m_state = State::Polling;
@@ -324,6 +331,7 @@ Measurement HantekDevice::parsePacket(const QByteArray &pkt) const
                           : (sign & 0x02) ? "+"
                           :                 " ";
 
+    m.relative = acdc & 0x04;
     m.siValue  = numVal * pfxMult;
     m.baseUnit = baseUnit;
     m.display  = (m.overload ? QStringLiteral("OL") : signStr + valStr)

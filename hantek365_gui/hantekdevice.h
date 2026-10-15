@@ -4,6 +4,7 @@
 #include <QSerialPort>
 #include <QStringList>
 #include <QTimer>
+#include <QDeadlineTimer>
 #include <QString>
 #include <cstdint>
 
@@ -13,6 +14,7 @@
 struct Measurement {
     bool    valid    = false;
     bool    overload = false; // display shows OL; siValue is meaningless
+    bool    relative = false; // REL flag reported by the meter
     double  siValue  = 0.0;   // value in SI base units (V, A, Ohm, °C...)
     QString display;          // display string: "+1.234 mV  DC AUTO"
     QString baseUnit;         // base unit without prefix: "V", "A", "Ω", "°C"...
@@ -29,6 +31,11 @@ public:
     static constexpr uint8_t PKT_OK     = 0xA0;
     static constexpr uint8_t PKT_NODATA = 0xAA;
     static constexpr int     PKT_LEN    = 15;
+
+    // After a mode or REL change the meter first reports its previous display
+    // with the new range, then a half-settled value; readings are clean about
+    // 1 s after the acknowledgement.
+    static constexpr int     SETTLE_MS  = 1000;
 
     // Radio dongle: CDC-ACM serial port
     static constexpr quint16     DONGLE_VID = 0x0451;
@@ -52,13 +59,14 @@ public slots:
     void connectDevice(const QString &portName);
     void disconnectDevice();
     void setMode(uint8_t modeCode, const QString &modeName);
-    void setRelative();
+    void setRelative();   // the meter toggles REL on every request
     void setPaused(bool paused);
 
 signals:
     void measurementReceived(const Measurement &m);
     void connectionChanged(bool connected);
     void modeChanged(const QString &modeName);
+    void modeChangeFailed();
     void statusMessage(const QString &msg);
 
 private slots:
@@ -89,4 +97,6 @@ private:
     uint8_t m_targetMode = 0;
     QString m_modeName;
     int     m_modeStep   = 0;
+    bool    m_paused     = false;
+    QDeadlineTimer m_settle {0};   // readings are dropped until it expires
 };
